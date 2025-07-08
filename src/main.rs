@@ -9,6 +9,7 @@ use tray_icon::{
 
 mod backup_manager;
 mod ui;
+mod autostart;
 
 use backup_manager::BackupManager;
 use ui::{BackupApp, AppMessage};
@@ -68,12 +69,11 @@ fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::E
     menu.append(&quit)?;
     
     let icon = create_tray_icon_image();
-    let tray = TrayIconBuilder::new()
+    let tray = match TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Browser Favoriten Backup")
         .with_icon(icon)
-        .build()?;
-    {
+        .build() {
         Ok(tray) => tray,
         Err(e) => {
             eprintln!("Failed to create tray icon: {}", e);
@@ -185,7 +185,7 @@ fn create_tray_icon_image() -> tray_icon::Icon {
 }
 
 #[cfg(target_os = "windows")]
-fn setup_autostart(enable: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn setup_autostart(enable: bool) -> Result<(), Box<dyn std::error::Error>> {
     use winreg::enums::*;
     use winreg::RegKey;
     
@@ -201,4 +201,9 @@ fn setup_autostart(enable: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
     
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn setup_autostart(_enable: bool) -> Result<(), Box<dyn std::error::Error>> {
+    Err("Autostart is only supported on Windows".into())
 }

@@ -9,6 +9,13 @@ use html_escape::encode_text;
 use std::thread;
 use std::time::Duration;
 
+#[derive(Debug)]
+enum BackupError {
+    IoError(std::io::Error),
+    JsonError(serde_json::Error),
+    BrowserNotFound(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct BackupResult {
     pub browser: String,
@@ -67,11 +74,11 @@ impl BackupManager {
             .join("Bookmarks")
     }
     
-    fn ensure_backup_dir(&self) {
+    fn ensure_backup_dir(&self) -> Result<(), std::io::Error> {
         if !self.backup_dir.exists() {
-            fs::create_dir_all(&self.backup_dir)
-                .map_err(|e| eprintln!("Failed to create backup directory: {}", e))?;
+            fs::create_dir_all(&self.backup_dir)?;
         }
+        Ok(())
     }
     
     fn load_config(&mut self) {

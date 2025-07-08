@@ -3,7 +3,7 @@ use crate::backup_manager::{BackupConfig, BackupFile, BackupManager};
 use crate::AppState;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
-use crate::setup_autostart;
+use crate::autostart::setup_autostart;
 
 pub enum AppMessage {
     ShowRestore,
@@ -249,7 +249,18 @@ impl BackupApp {
         }
 
         if ui.checkbox(&mut self.autostart, "Mit Windows starten").changed() {
-             setup_autostart(self.autostart).ok();
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(e) = crate::setup_autostart(self.autostart) {
+                    eprintln!("Failed to set autostart: {}", e);
+                }
+            }
+            
+            #[cfg(not(target_os = "windows"))]
+            {
+                // Autostart not supported on this platform
+                eprintln!("Autostart is only supported on Windows");
+            }
         }
         
         ui.separator();
