@@ -16,6 +16,7 @@ pub struct BackupApp {
     backup_list: Vec<BackupFile>,
     selected_backup: Option<usize>,
     app_state: Arc<Mutex<AppState>>,
+    autostart: bool,
 }
 
 #[derive(PartialEq)]
@@ -34,6 +35,7 @@ impl BackupApp {
             backup_list: Vec::new(),
             selected_backup: None,
             app_state,
+            autostart: false,
         };
         
         app.load_backup_list();

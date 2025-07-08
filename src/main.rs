@@ -75,7 +75,8 @@ fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::E
         .build()?;
     
     let menu_channel = MenuEvent::receiver();
-    let backup_manager = BackupManager::new();
+    let backup_manager = Arc::new(Mutex::new(BackupManager::new()));
+    BackupManager::schedule_backup(backup_manager.clone(), 24);
     
     loop {
         if let Ok(event) = menu_channel.recv() {

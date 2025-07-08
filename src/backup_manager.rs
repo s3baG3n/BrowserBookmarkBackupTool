@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct BackupResult {
@@ -274,23 +275,17 @@ impl BackupManager {
         
         Ok(message)
     }
-}
 
-
-// Erweiterte Features für backup_manager.rs
-
-impl BackupManager {
     // Automatisches Backup nach Zeitplan
-    pub fn schedule_backup(&self, interval_hours: u64) {
+   pub fn schedule_backup(manager: Arc<Mutex<Self>>, interval_hours: u64) {
         use std::thread;
         use std::time::Duration;
-        
-        let manager = self.clone(); // BackupManager muss Clone implementieren
         
         thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_secs(interval_hours * 3600));
-                let results = manager.backup_all();
+                
+                let results = manager.lock().unwrap().backup_all();
                 
                 // Log oder Notification
                 println!("Automatisches Backup durchgeführt: {:?}", results);
