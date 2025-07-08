@@ -6,6 +6,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use html_escape::encode_text;
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct BackupResult {
@@ -294,20 +296,28 @@ impl BackupManager {
     }
 
     // Automatisches Backup nach Zeitplan
-    pub fn schedule_backup(manager: Arc<Mutex<Self>>, interval_hours: u64) {
-        thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(interval_hours * 3600));
-                
-                let results = {
-                    // Lock only for the backup operation
-                    manager.lock().unwrap().backup_all()
-                };
-                
-                println!("Automatisches Backup durchgeführt: {:?}", results);
-            }
-        });
-    }
+    pub fn schedule_backup(interval_hours: u64) {
+            thread::spawn(move || {
+                loop {
+                    thread::sleep(Duration::from_secs(interval_hours * 3600));
+                    
+                    // Create a new BackupManager instance for this thread
+                    let backup_manager = BackupManager::new();
+                    let results = backup_manager.backup_all();
+                    
+                    println!("Automatisches Backup durchgeführt: {:?}", results);
+                    
+                    // Log results
+                    for result in &results {
+                        if result.success {
+                            println!("✓ {} backup successful: {}", result.browser, result.message);
+                        } else {
+                            eprintln!("✗ {} backup failed: {}", result.browser, result.message);
+                        }
+                    }
+                }
+            });
+        }
     
     // Alte Backups automatisch löschen
     pub fn cleanup_old_backups(&self, keep_days: i64) -> Result<usize, String> {
@@ -451,7 +461,9 @@ impl BackupManager {
                                 ) {
                                     result.push_str(&format!(
                                         "{}    <li><a href=\"{}\">{}</a></li>\n",
-                                        indent, url, name
+                                        indent,    
+                                        encode_text(url).as_ref(),
+                                        encode_text(name).as_ref()
                                     ));
                                 }
                             }

@@ -68,15 +68,22 @@ fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::E
     menu.append(&quit)?;
     
     let icon = create_tray_icon_image();
-    let _tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Browser Favoriten Backup")
         .with_icon(icon)
         .build()?;
+    {
+        Ok(tray) => tray,
+        Err(e) => {
+            eprintln!("Failed to create tray icon: {}", e);
+            return Err(Box::new(e));
+        }
+    };
     
     let menu_channel = MenuEvent::receiver();
     let backup_manager = Arc::new(Mutex::new(BackupManager::new()));
-    BackupManager::schedule_backup(backup_manager.clone(), 24);
+    BackupManager::schedule_backup(24);
     
     loop {
         if let Ok(event) = menu_channel.recv() {
@@ -128,6 +135,7 @@ fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::E
             }
         }
     }
+    drop(tray);
     
     Ok(())
 }
