@@ -279,15 +279,22 @@ impl BackupManager {
                     .join("Mozilla")
                     .join("Firefox")
                     .join("Profiles");
+
+                let mut profile_path = None;
                 if let Ok(entries) = fs::read_dir(&profiles_path) {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_dir() && path.to_string_lossy().ends_with(".default-release") {
-                            return Ok(path.join("places.sqlite").to_string_lossy().to_string());
+                            profile_path = Some(path.join("places.sqlite"));
+                            break;
                         }
                     }
                 }
-                return Err("Firefox Profil nicht gefunden".to_string());
+
+                match profile_path {
+                    Some(p) => p,
+                    None => return Err("Firefox Profil nicht gefunden".to_string()),
+                }
             }
             _ => return Err("Unbekannter Browser".to_string()),
         };
