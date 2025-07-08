@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use html_escape::encode_text;
 
 #[derive(Debug, Clone)]
 pub struct BackupResult {
@@ -66,7 +67,8 @@ impl BackupManager {
     
     fn ensure_backup_dir(&self) {
         if !self.backup_dir.exists() {
-            fs::create_dir_all(&self.backup_dir).ok();
+            fs::create_dir_all(&self.backup_dir)
+                .map_err(|e| eprintln!("Failed to create backup directory: {}", e))?;
         }
     }
     
@@ -237,13 +239,28 @@ impl BackupManager {
         
         let target_path = match browser {
             "Chrome" => PathBuf::from(&user_profile)
-                .join("AppData/Local/Google/Chrome/User Data/Default/Bookmarks"),
+                .join("AppData")
+                .join("Local")
+                .join("Google")
+                .join("Chrome")
+                .join("User Data")
+                .join("Default")
+                .join("Bookmarks"),
             "Edge" => PathBuf::from(&user_profile)
-                .join("AppData/Local/Microsoft/Edge/User Data/Default/Bookmarks"),
+                .join("AppData")
+                .join("Local")
+                .join("Microsoft")
+                .join("Edge")
+                .join("User Data")
+                .join("Default")
+                .join("Bookmarks"),
             "Firefox" => {
                 let profiles_path = PathBuf::from(&user_profile)
-                    .join("AppData/Roaming/Mozilla/Firefox/Profiles");
-                
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("Mozilla")
+                    .join("Firefox")
+                    .join("Profiles");
                 if let Ok(entries) = fs::read_dir(&profiles_path) {
                     for entry in entries.flatten() {
                         let path = entry.path();
@@ -277,17 +294,16 @@ impl BackupManager {
     }
 
     // Automatisches Backup nach Zeitplan
-   pub fn schedule_backup(manager: Arc<Mutex<Self>>, interval_hours: u64) {
-        use std::thread;
-        use std::time::Duration;
-        
+    pub fn schedule_backup(manager: Arc<Mutex<Self>>, interval_hours: u64) {
         thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_secs(interval_hours * 3600));
                 
-                let results = manager.lock().unwrap().backup_all();
+                let results = {
+                    // Lock only for the backup operation
+                    manager.lock().unwrap().backup_all()
+                };
                 
-                // Log oder Notification
                 println!("Automatisches Backup durchgeführt: {:?}", results);
             }
         });
@@ -415,7 +431,7 @@ impl BackupManager {
             
             if let Some(name) = folder.get("name").and_then(|v| v.as_str()) {
                 if depth > 0 {
-                    result.push_str(&format!("{}<div class=\"folder\">{}</div>\n", indent, name));
+                    result.push_str(&format!("{}<div class=\"folder\">{}</div>\n", indent, encode_text(name));
                 }
             }
             

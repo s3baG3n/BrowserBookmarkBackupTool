@@ -14,7 +14,7 @@ native-dialog = "0.7"
 tray-icon = "0.11"
 image = "0.24"
 zip = "0.6"
-winreg = "0.52"
+html-escape = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }

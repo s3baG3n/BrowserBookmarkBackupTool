@@ -3,6 +3,7 @@ use crate::backup_manager::{BackupConfig, BackupFile, BackupManager};
 use crate::AppState;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
+use crate::setup_autostart;
 
 pub enum AppMessage {
     ShowRestore,
