@@ -1,0 +1,37 @@
+[package]
+name = "browser_backup_rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.24"
+egui = "0.24"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+dirs = "5.0"
+native-dialog = "0.7"
+tray-icon = "0.11"
+image = "0.24"
+zip = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "shellapi"] }
+
+[profile.release]
+opt-level = "z"      # Optimierung für kleine Größe
+lto = true           # Link Time Optimization
+codegen-units = 1    # Bessere Optimierung
+strip = true         # Debug-Symbole entfernen
+
+# Windows-spezifische Einstellungen
+[target.'cfg(windows)']
+rustflags = ["-C", "link-arg=-s"]  # Strip symbols
+
+# Für Windows-Icon
+[package.metadata.winres]
+ProductName = "Browser Backup"
+FileDescription = "Browser Favoriten Backup Tool"
+
+[build-dependencies]
+winres = "0.1"
