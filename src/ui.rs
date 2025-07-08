@@ -1,4 +1,4 @@
-// ui.rs
+// ui.rs - Fixed version
 use crate::backup_manager::{BackupConfig, BackupFile, BackupManager};
 use crate::AppState;
 use eframe::egui;
@@ -11,7 +11,7 @@ pub enum AppMessage {
 }
 
 pub struct BackupApp {
-    backup_manager: BackupManager,
+    backup_manager: Arc<Mutex<BackupManager>>,
     current_view: View,
     selected_browser: String,
     backup_list: Vec<BackupFile>,
@@ -28,15 +28,22 @@ enum View {
 }
 
 impl BackupApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, app_state: Arc<Mutex<AppState>>) -> Self {
+    pub fn new(
+        _cc: &eframe::CreationContext<'_>, 
+        app_state: Arc<Mutex<AppState>>,
+        backup_manager: Arc<Mutex<BackupManager>>
+    ) -> Self {
+        // Check current autostart status
+        let autostart = check_autostart_enabled();
+        
         let mut app = Self {
-            backup_manager: BackupManager::new(),
+            backup_manager,
             current_view: View::Main,
             selected_browser: "Chrome".to_string(),
             backup_list: Vec::new(),
             selected_backup: None,
             app_state,
-            autostart: false,
+            autostart,
         };
         
         app.load_backup_list();
@@ -44,8 +51,10 @@ impl BackupApp {
     }
     
     fn load_backup_list(&mut self) {
-        self.backup_list = self.backup_manager.get_backup_list(&self.selected_browser);
-        self.selected_backup = None;
+        if let Ok(manager) = self.backup_manager.lock() {
+            self.backup_list = manager.get_backup_list(&self.selected_browser);
+            self.selected_backup = None;
+        }
     }
     
     fn process_messages(&mut self) {
@@ -80,7 +89,7 @@ impl BackupApp {
     fn show_main_view(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("📦 Backup erstellen").clicked() {
-                let results = self.backup_manager.backup_all();
+                let results = self.backup_manager.lock().unwrap().backup_all();
                 let success_count = results.iter().filter(|r| r.success).count();
                 
                 let mut message = format!("Backup abgeschlossen!\n\nErfolgreich: {} von {}\n\n", 
@@ -110,7 +119,8 @@ impl BackupApp {
             }
             
             if ui.button("📁 Backup-Ordner öffnen").clicked() {
-                let backup_dir = self.backup_manager.get_backup_directory();
+                let backup_dir = self.backup_manager.lock().unwrap()
+                    .get_backup_directory().to_path_buf();
                 #[cfg(target_os = "windows")]
                 {
                     std::process::Command::new("explorer")
@@ -126,16 +136,86 @@ impl BackupApp {
         // Übersicht der letzten Backups
         ui.heading("Letzte Backups:");
         
-        for browser in &["Chrome", "Edge", "Firefox"] {
-            let backups = self.backup_manager.get_backup_list(browser);
-            if let Some(latest) = backups.first() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{}: ", browser));
-                    ui.label(latest.date.format("%d.%m.%Y %H:%M:%S").to_string());
-                    ui.label(format!("({:.1} KB)", latest.size as f64 / 1024.0));
-                });
+        if let Ok(manager) = self.backup_manager.lock() {
+            for browser in &["Chrome", "Edge", "Firefox"] {
+                let backups = manager.get_backup_list(browser);
+                if let Some(latest) = backups.first() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}: ", browser));
+                        ui.label(latest.date.format("%d.%m.%Y %H:%M:%S").to_string());
+                        ui.label(format!("({:.1} KB)", latest.size as f64 / 1024.0));
+                    });
+                }
             }
         }
+        
+        ui.separator();
+        
+        // Additional functions
+        ui.heading("Weitere Funktionen:");
+        
+        ui.horizontal(|ui| {
+            if ui.button("🗑 Alte Backups löschen").clicked() {
+                // Show dialog to select days to keep
+                let days = native_dialog::MessageDialog::new()
+                    .set_type(native_dialog::MessageType::Input)
+                    .set_title("Alte Backups löschen")
+                    .set_text("Backups älter als wie viele Tage löschen? (Standard: 30)")
+                    .show_confirm();
+                
+                // For simplicity, using a fixed value. In a real app, you'd parse the input
+                if days.unwrap_or(false) {
+                    match self.backup_manager.lock().unwrap().cleanup_old_backups(30) {
+                        Ok(count) => {
+                            native_dialog::MessageDialog::new()
+                                .set_type(native_dialog::MessageType::Info)
+                                .set_title("Bereinigung abgeschlossen")
+                                .set_text(&format!("{} alte Backups wurden gelöscht.", count))
+                                .show_alert()
+                                .ok();
+                        }
+                        Err(e) => {
+                            native_dialog::MessageDialog::new()
+                                .set_type(native_dialog::MessageType::Error)
+                                .set_title("Fehler")
+                                .set_text(&format!("Fehler beim Löschen: {}", e))
+                                .show_alert()
+                                .ok();
+                        }
+                    }
+                    self.load_backup_list();
+                }
+            }
+            
+            if ui.button("📤 Als ZIP exportieren").clicked() {
+                if let Some(path) = native_dialog::FileDialog::new()
+                    .set_filename("browser_backups.zip")
+                    .add_filter("ZIP Archive", &["zip"])
+                    .show_save_single_file()
+                    .ok()
+                    .flatten() 
+                {
+                    match self.backup_manager.lock().unwrap().export_backups(&path) {
+                        Ok(_) => {
+                            native_dialog::MessageDialog::new()
+                                .set_type(native_dialog::MessageType::Info)
+                                .set_title("Export erfolgreich")
+                                .set_text(&format!("Backups wurden nach {} exportiert.", path.display()))
+                                .show_alert()
+                                .ok();
+                        }
+                        Err(e) => {
+                            native_dialog::MessageDialog::new()
+                                .set_type(native_dialog::MessageType::Error)
+                                .set_title("Export fehlgeschlagen")
+                                .set_text(&format!("Fehler beim Exportieren: {}", e))
+                                .show_alert()
+                                .ok();
+                        }
+                    }
+                }
+            }
+        });
     }
     
     fn show_restore_view(&mut self, ui: &mut egui::Ui) {
@@ -152,6 +232,38 @@ impl BackupApp {
                 }
             }
         });
+        
+        ui.separator();
+        
+        // Export als HTML Button
+        if ui.button("📄 Als HTML exportieren").clicked() {
+            if let Some(path) = native_dialog::FileDialog::new()
+                .set_filename(&format!("{}_bookmarks.html", self.selected_browser.to_lowercase()))
+                .add_filter("HTML", &["html", "htm"])
+                .show_save_single_file()
+                .ok()
+                .flatten()
+            {
+                match self.backup_manager.lock().unwrap().export_as_html(&self.selected_browser, &path) {
+                    Ok(_) => {
+                        native_dialog::MessageDialog::new()
+                            .set_type(native_dialog::MessageType::Info)
+                            .set_title("Export erfolgreich")
+                            .set_text(&format!("Favoriten wurden nach {} exportiert.", path.display()))
+                            .show_alert()
+                            .ok();
+                    }
+                    Err(e) => {
+                        native_dialog::MessageDialog::new()
+                            .set_type(native_dialog::MessageType::Error)
+                            .set_title("Export fehlgeschlagen")
+                            .set_text(&format!("Fehler beim Exportieren: {}", e))
+                            .show_alert()
+                            .ok();
+                    }
+                }
+            }
+        }
         
         ui.separator();
         
@@ -189,7 +301,8 @@ impl BackupApp {
                             .show_confirm();
                             
                         if result.unwrap_or(false) {
-                            match self.backup_manager.restore_backup(&self.selected_browser, &backup.path) {
+                            match self.backup_manager.lock().unwrap()
+                                .restore_backup(&self.selected_browser, &backup.path) {
                                 Ok(message) => {
                                     native_dialog::MessageDialog::new()
                                         .set_type(native_dialog::MessageType::Info)
@@ -233,7 +346,7 @@ impl BackupApp {
         
         ui.heading("Browser für Backup auswählen:");
         
-        let mut config = self.backup_manager.get_config().clone();
+        let mut config = self.backup_manager.lock().unwrap().get_config().clone();
         let mut changed = false;
         
         if ui.checkbox(&mut config.backup_chrome, "Google Chrome").changed() {
@@ -247,31 +360,35 @@ impl BackupApp {
         if ui.checkbox(&mut config.backup_firefox, "Mozilla Firefox").changed() {
             changed = true;
         }
-
+        
+        ui.separator();
+        
+        ui.heading("System-Einstellungen:");
+        
         if ui.checkbox(&mut self.autostart, "Mit Windows starten").changed() {
-            #[cfg(target_os = "windows")]
-            {
-                if let Err(e) = crate::setup_autostart(self.autostart) {
-                    eprintln!("Failed to set autostart: {}", e);
-                }
-            }
-            
-            #[cfg(not(target_os = "windows"))]
-            {
-                // Autostart not supported on this platform
-                eprintln!("Autostart is only supported on Windows");
+            if let Err(e) = setup_autostart(self.autostart) {
+                eprintln!("Failed to set autostart: {}", e);
+                // Show error to user
+                native_dialog::MessageDialog::new()
+                    .set_type(native_dialog::MessageType::Error)
+                    .set_title("Fehler")
+                    .set_text(&format!("Autostart konnte nicht geändert werden: {}", e))
+                    .show_alert()
+                    .ok();
+                // Revert checkbox
+                self.autostart = !self.autostart;
             }
         }
         
         ui.separator();
         
         ui.label(format!("Backup-Verzeichnis: {}", 
-            self.backup_manager.get_backup_directory().display()));
+            self.backup_manager.lock().unwrap().get_backup_directory().display()));
         
         ui.separator();
         
         if ui.button("💾 Speichern").clicked() && changed {
-            self.backup_manager.set_config(config);
+            self.backup_manager.lock().unwrap().set_config(config);
             native_dialog::MessageDialog::new()
                 .set_type(native_dialog::MessageType::Info)
                 .set_title("Gespeichert")
@@ -279,5 +396,26 @@ impl BackupApp {
                 .show_alert()
                 .ok();
         }
+    }
+}
+
+// Helper function to check if autostart is enabled
+fn check_autostart_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::*;
+        use winreg::RegKey;
+        
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(key) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run") {
+            key.get_value::<String, _>("BrowserBackup").is_ok()
+        } else {
+            false
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
     }
 }

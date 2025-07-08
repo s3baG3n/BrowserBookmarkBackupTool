@@ -1,4 +1,4 @@
-// main.rs
+// main.rs - Fixed version
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,9 +19,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_state = Arc::new(Mutex::new(AppState::default()));
     let app_state_tray = app_state.clone();
     
+    // Shared BackupManager instance
+    let backup_manager = Arc::new(Mutex::new(BackupManager::new()));
+    let backup_manager_tray = backup_manager.clone();
+    
+    // Start scheduled backups
+    BackupManager::start_scheduled_backups(backup_manager.clone(), 24);
+    
     // Tray Icon in separatem Thread
     thread::spawn(move || {
-        if let Err(e) = run_tray(app_state_tray) {
+        if let Err(e) = run_tray(app_state_tray, backup_manager_tray) {
             eprintln!("Tray error: {}", e);
         }
     });
@@ -39,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Browser Favoriten Backup",
         options,
         Box::new(move |cc| {
-            Box::new(BackupApp::new(cc, app_state.clone()))
+            Box::new(BackupApp::new(cc, app_state.clone(), backup_manager.clone()))
         }),
     )?;
     
@@ -52,7 +59,7 @@ struct AppState {
     message_queue: Vec<AppMessage>,
 }
 
-fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_tray(app_state: Arc<Mutex<AppState>>, backup_manager: Arc<Mutex<BackupManager>>) -> Result<(), Box<dyn std::error::Error>> {
     let menu = Menu::new();
     let backup_now = MenuItem::new("Backup jetzt erstellen", true, None);
     let restore = MenuItem::new("Wiederherstellen...", true, None);
@@ -82,14 +89,12 @@ fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::E
     };
     
     let menu_channel = MenuEvent::receiver();
-    let backup_manager = Arc::new(Mutex::new(BackupManager::new()));
-    BackupManager::schedule_backup(24);
     
     loop {
         if let Ok(event) = menu_channel.recv() {
             match event.id {
                 id if id == backup_now.id() => {
-                    let results = backup_manager.backup_all();
+                    let results = backup_manager.lock().unwrap().backup_all();
                     // Notification anzeigen
                     let success_count = results.iter().filter(|r| r.success).count();
                     let message = format!(
@@ -119,7 +124,7 @@ fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::E
                     state.message_queue.push(AppMessage::ShowSettings);
                 }
                 id if id == open_folder.id() => {
-                    let backup_dir = backup_manager.get_backup_directory();
+                    let backup_dir = backup_manager.lock().unwrap().get_backup_directory().to_path_buf();
                     #[cfg(target_os = "windows")]
                     {
                         std::process::Command::new("explorer")
@@ -135,7 +140,6 @@ fn run_tray(app_state: Arc<Mutex<AppState>>) -> Result<(), Box<dyn std::error::E
             }
         }
     }
-    drop(tray);
     
     Ok(())
 }
@@ -176,34 +180,42 @@ fn create_icon() -> eframe::IconData {
 }
 
 fn create_tray_icon_image() -> tray_icon::Icon {
-    let icon_bytes = include_bytes!("../icon.ico");
-    tray_icon::Icon::from_resource(icon_bytes, None).unwrap_or_else(|_| {
-        // Fallback: Erstelle ein einfaches Icon
-        let pixels = vec![255u8; 16 * 16 * 4];
-        tray_icon::Icon::from_rgba(pixels, 16, 16).expect("Failed to create icon")
-    })
-}
-
-#[cfg(target_os = "windows")]
-pub fn setup_autostart(enable: bool) -> Result<(), Box<dyn std::error::Error>> {
-    use winreg::enums::*;
-    use winreg::RegKey;
-    
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    let (key, _) = hkcu.create_subkey(path)?;
-    
-    if enable {
-        let exe_path = std::env::current_exe()?;
-        key.set_value("BrowserBackup", &exe_path.to_string_lossy().as_ref())?;
-    } else {
-        key.delete_value("BrowserBackup").ok();
+    // Try to load from embedded resource first
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(icon) = tray_icon::Icon::from_resource(1, None) {
+            return icon;
+        }
     }
     
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn setup_autostart(_enable: bool) -> Result<(), Box<dyn std::error::Error>> {
-    Err("Autostart is only supported on Windows".into())
+    // Fallback: Create a simple icon programmatically
+    let size = 16;
+    let mut pixels = vec![255u8; size * size * 4];
+    
+    // Create a simple backup icon (folder with arrow)
+    for y in 0..size {
+        for x in 0..size {
+            let idx = (y * size + x) * 4;
+            
+            // Blue folder shape
+            if (x >= 2 && x < 14 && y >= 4 && y < 13) {
+                pixels[idx] = 33;     // R
+                pixels[idx + 1] = 150; // G
+                pixels[idx + 2] = 243; // B
+                pixels[idx + 3] = 255; // A
+            }
+            
+            // Green arrow pointing up
+            if ((x >= 7 && x < 9 && y >= 2 && y < 8) ||
+                (x >= 5 && x < 11 && y >= 6 && y < 8 && (x < 7 || x >= 9))) {
+                pixels[idx] = 76;     // R
+                pixels[idx + 1] = 175; // G
+                pixels[idx + 2] = 80;  // B
+                pixels[idx + 3] = 255; // A
+            }
+        }
+    }
+    
+    tray_icon::Icon::from_rgba(pixels, size as u32, size as u32)
+        .expect("Failed to create icon")
 }

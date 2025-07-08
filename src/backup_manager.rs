@@ -1,14 +1,14 @@
-// backup_manager.rs
+// backup_manager.rs - Fixed version
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use html_escape::encode_text;
 use std::thread;
 use std::time::Duration;
 use rusqlite::{Connection, Result as SqlResult};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 enum BackupError {
@@ -61,15 +61,18 @@ impl BackupManager {
             config: BackupConfig::default(),
         };
         
-        manager.ensure_backup_dir();
+        manager.ensure_backup_dir().ok();
         manager.load_config();
         manager
     }
     
     fn get_default_backup_dir() -> PathBuf {
         let user_profile = std::env::var("USERPROFILE")
-            .unwrap_or_else(|_| dirs::home_dir().unwrap().to_string_lossy().to_string());
-            PathBuf::from(user_profile)
+            .unwrap_or_else(|_| dirs::home_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "C:\\".to_string()));
+        
+        PathBuf::from(user_profile)
             .join("Work Folders")
             .join("Benutzerdatensicherung")
             .join("Bookmarks")
@@ -195,8 +198,12 @@ impl BackupManager {
         }
         
         let browser_backup_dir = self.backup_dir.join(browser);
-        if !browser_backup_dir.exists() {
-            fs::create_dir_all(&browser_backup_dir).ok();
+        if let Err(e) = fs::create_dir_all(&browser_backup_dir) {
+            return BackupResult {
+                browser: browser.to_string(),
+                success: false,
+                message: format!("Fehler beim Erstellen des Verzeichnisses: {}", e),
+            };
         }
         
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
@@ -245,7 +252,8 @@ impl BackupManager {
     }
     
     pub fn restore_backup(&self, browser: &str, backup_path: &Path) -> Result<String, String> {
-        let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+        let user_profile = std::env::var("USERPROFILE")
+            .map_err(|_| "USERPROFILE environment variable not found".to_string())?;
         
         let target_path = match browser {
             "Chrome" => PathBuf::from(&user_profile)
@@ -303,19 +311,17 @@ impl BackupManager {
         Ok(message)
     }
 
-    // Automatisches Backup nach Zeitplan
-    pub fn schedule_backup(interval_hours: u64) {
-            thread::spawn(move || {
-                loop {
-                    thread::sleep(Duration::from_secs(interval_hours * 3600));
-                    
-                    // Create a new BackupManager instance for this thread
-                    let backup_manager = BackupManager::new();
-                    let results = backup_manager.backup_all();
+    // Static method for scheduling that doesn't create new instances
+    pub fn start_scheduled_backups(backup_manager: Arc<Mutex<BackupManager>>, interval_hours: u64) {
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(interval_hours * 3600));
+                
+                if let Ok(manager) = backup_manager.lock() {
+                    let results = manager.backup_all();
                     
                     println!("Automatisches Backup durchgeführt: {:?}", results);
                     
-                    // Log results
                     for result in &results {
                         if result.success {
                             println!("✓ {} backup successful: {}", result.browser, result.message);
@@ -324,8 +330,9 @@ impl BackupManager {
                         }
                     }
                 }
-            });
-        }
+            }
+        });
+    }
     
     // Alte Backups automatisch löschen
     pub fn cleanup_old_backups(&self, keep_days: i64) -> Result<usize, String> {
@@ -357,7 +364,6 @@ impl BackupManager {
     pub fn export_backups(&self, export_path: &Path) -> Result<(), String> {
         use zip::write::FileOptions;
         use zip::ZipWriter;
-        use std::io::Write;
         
         let file = fs::File::create(export_path)
             .map_err(|e| format!("Fehler beim Erstellen der ZIP-Datei: {}", e))?;
@@ -426,159 +432,158 @@ impl BackupManager {
     }
  
     fn firefox_sqlite_to_html(&self, db_path: &Path) -> Result<String, String> {
-            // Open the SQLite database
-            let conn = Connection::open(db_path)
-                .map_err(|e| format!("Fehler beim Öffnen der Firefox-Datenbank: {}", e))?;
-            
-            // Query to get bookmarks with folder structure
-            let query = r#"
-                WITH RECURSIVE
-                bookmark_tree(id, parent, title, url, position, level, path) AS (
-                    -- Root folders
-                    SELECT 
-                        b.id,
-                        b.parent,
-                        b.title,
-                        p.url,
-                        b.position,
-                        0 as level,
-                        b.title as path
-                    FROM moz_bookmarks b
-                    LEFT JOIN moz_places p ON b.fk = p.id
-                    WHERE b.parent IN (1, 2, 3, 4, 5)  -- Standard Firefox root folders
-                    
-                    UNION ALL
-                    
-                    -- Recursive part
-                    SELECT 
-                        b.id,
-                        b.parent,
-                        b.title,
-                        p.url,
-                        b.position,
-                        bt.level + 1,
-                        bt.path || ' > ' || b.title
-                    FROM moz_bookmarks b
-                    LEFT JOIN moz_places p ON b.fk = p.id
-                    JOIN bookmark_tree bt ON b.parent = bt.id
-                )
-                SELECT id, parent, title, url, position, level, path
-                FROM bookmark_tree
-                WHERE title IS NOT NULL
-                ORDER BY parent, position
-            "#;
-            
-            let mut stmt = conn.prepare(query)
-                .map_err(|e| format!("Fehler beim Vorbereiten der SQL-Abfrage: {}", e))?;
-            
-            #[derive(Debug)]
-            struct Bookmark {
-                id: i64,
-                parent: i64,
-                title: String,
-                url: Option<String>,
-                position: i32,
-                level: i32,
-            }
-            
-            let bookmarks_iter = stmt.query_map([], |row| {
-                Ok(Bookmark {
-                    id: row.get(0)?,
-                    parent: row.get(1)?,
-                    title: row.get(2)?,
-                    url: row.get(3)?,
-                    position: row.get(4)?,
-                    level: row.get(5)?,
-                })
-            }).map_err(|e| format!("Fehler beim Ausführen der SQL-Abfrage: {}", e))?;
-            
-            let mut bookmarks: Vec<Bookmark> = Vec::new();
-            for bookmark_result in bookmarks_iter {
-                bookmarks.push(bookmark_result.map_err(|e| format!("Fehler beim Lesen der Lesezeichen: {}", e))?);
-            }
-            
-            // Build HTML
-            let mut html = String::from(
-                "<!DOCTYPE html>\n\
-                <html>\n\
-                <head>\n\
-                    <meta charset=\"UTF-8\">\n\
-                    <title>Firefox Favoriten</title>\n\
-                    <style>\n\
-                        body { font-family: Arial, sans-serif; margin: 20px; }\n\
-                        ul { list-style-type: none; padding-left: 20px; }\n\
-                        li { margin: 5px 0; }\n\
-                        a { text-decoration: none; color: #0066cc; }\n\
-                        a:hover { text-decoration: underline; }\n\
-                        .folder { font-weight: bold; margin: 10px 0; }\n\
-                        .root { margin-left: 0; padding-left: 0; }\n\
-                    </style>\n\
-                </head>\n\
-                <body>\n\
-                    <h1>Firefox Favoriten</h1>\n"
-            );
-            
-            // Group bookmarks by parent
-            use std::collections::HashMap;
-            let mut children_map: HashMap<i64, Vec<&Bookmark>> = HashMap::new();
-            for bookmark in &bookmarks {
-                children_map.entry(bookmark.parent).or_insert_with(Vec::new).push(bookmark);
-            }
-            
-            // Recursive function to build HTML
-            fn build_html_tree(
-                parent_id: i64,
-                children_map: &HashMap<i64, Vec<&Bookmark>>,
-                level: usize
-            ) -> String {
-                let mut result = String::new();
+        // Open the SQLite database
+        let conn = Connection::open(db_path)
+            .map_err(|e| format!("Fehler beim Öffnen der Firefox-Datenbank: {}", e))?;
+        
+        // Query to get bookmarks with folder structure
+        let query = r#"
+            WITH RECURSIVE
+            bookmark_tree(id, parent, title, url, position, level, path) AS (
+                -- Root folders
+                SELECT 
+                    b.id,
+                    b.parent,
+                    b.title,
+                    p.url,
+                    b.position,
+                    0 as level,
+                    b.title as path
+                FROM moz_bookmarks b
+                LEFT JOIN moz_places p ON b.fk = p.id
+                WHERE b.parent IN (1, 2, 3, 4, 5)  -- Standard Firefox root folders
                 
-                if let Some(children) = children_map.get(&parent_id) {
-                    let indent = "    ".repeat(level);
-                    result.push_str(&format!("{}<ul{}>\n", 
-                        indent, 
-                        if level == 0 { " class=\"root\"" } else { "" }
-                    ));
-                    
-                    for child in children {
-                        if child.url.is_some() {
-                            // It's a bookmark
-                            result.push_str(&format!(
-                                "{}    <li><a href=\"{}\">{}</a></li>\n",
-                                indent,
-                                encode_text(child.url.as_ref().unwrap()).as_ref(),
-                                encode_text(&child.title).as_ref()
-                            ));
-                        } else {
-                            // It's a folder
-                            result.push_str(&format!(
-                                "{}    <li class=\"folder\">{}\n",
-                                indent,
-                                encode_text(&child.title).as_ref()
-                            ));
-                            
-                            // Recursively add children
-                            result.push_str(&build_html_tree(child.id, children_map, level + 2));
-                            
-                            result.push_str(&format!("{}    </li>\n", indent));
-                        }
+                UNION ALL
+                
+                -- Recursive part
+                SELECT 
+                    b.id,
+                    b.parent,
+                    b.title,
+                    p.url,
+                    b.position,
+                    bt.level + 1,
+                    bt.path || ' > ' || b.title
+                FROM moz_bookmarks b
+                LEFT JOIN moz_places p ON b.fk = p.id
+                JOIN bookmark_tree bt ON b.parent = bt.id
+            )
+            SELECT id, parent, title, url, position, level, path
+            FROM bookmark_tree
+            WHERE title IS NOT NULL
+            ORDER BY parent, position
+        "#;
+        
+        let mut stmt = conn.prepare(query)
+            .map_err(|e| format!("Fehler beim Vorbereiten der SQL-Abfrage: {}", e))?;
+        
+        #[derive(Debug)]
+        struct Bookmark {
+            id: i64,
+            parent: i64,
+            title: String,
+            url: Option<String>,
+            position: i32,
+            level: i32,
+        }
+        
+        let bookmarks_iter = stmt.query_map([], |row| {
+            Ok(Bookmark {
+                id: row.get(0)?,
+                parent: row.get(1)?,
+                title: row.get(2)?,
+                url: row.get(3)?,
+                position: row.get(4)?,
+                level: row.get(5)?,
+            })
+        }).map_err(|e| format!("Fehler beim Ausführen der SQL-Abfrage: {}", e))?;
+        
+        let mut bookmarks: Vec<Bookmark> = Vec::new();
+        for bookmark_result in bookmarks_iter {
+            bookmarks.push(bookmark_result.map_err(|e| format!("Fehler beim Lesen der Lesezeichen: {}", e))?);
+        }
+        
+        // Build HTML
+        let mut html = String::from(
+            "<!DOCTYPE html>\n\
+            <html>\n\
+            <head>\n\
+                <meta charset=\"UTF-8\">\n\
+                <title>Firefox Favoriten</title>\n\
+                <style>\n\
+                    body { font-family: Arial, sans-serif; margin: 20px; }\n\
+                    ul { list-style-type: none; padding-left: 20px; }\n\
+                    li { margin: 5px 0; }\n\
+                    a { text-decoration: none; color: #0066cc; }\n\
+                    a:hover { text-decoration: underline; }\n\
+                    .folder { font-weight: bold; margin: 10px 0; }\n\
+                    .root { margin-left: 0; padding-left: 0; }\n\
+                </style>\n\
+            </head>\n\
+            <body>\n\
+                <h1>Firefox Favoriten</h1>\n"
+        );
+        
+        // Group bookmarks by parent
+        use std::collections::HashMap;
+        let mut children_map: HashMap<i64, Vec<&Bookmark>> = HashMap::new();
+        for bookmark in &bookmarks {
+            children_map.entry(bookmark.parent).or_insert_with(Vec::new).push(bookmark);
+        }
+        
+        // Recursive function to build HTML
+        fn build_html_tree(
+            parent_id: i64,
+            children_map: &HashMap<i64, Vec<&Bookmark>>,
+            level: usize
+        ) -> String {
+            let mut result = String::new();
+            
+            if let Some(children) = children_map.get(&parent_id) {
+                let indent = "    ".repeat(level);
+                result.push_str(&format!("{}<ul{}>\n", 
+                    indent, 
+                    if level == 0 { " class=\"root\"" } else { "" }
+                ));
+                
+                for child in children {
+                    if child.url.is_some() {
+                        // It's a bookmark
+                        result.push_str(&format!(
+                            "{}    <li><a href=\"{}\">{}</a></li>\n",
+                            indent,
+                            encode_text(child.url.as_ref().unwrap()).as_ref(),
+                            encode_text(&child.title).as_ref()
+                        ));
+                    } else {
+                        // It's a folder
+                        result.push_str(&format!(
+                            "{}    <li class=\"folder\">{}\n",
+                            indent,
+                            encode_text(&child.title).as_ref()
+                        ));
+                        
+                        // Recursively add children
+                        result.push_str(&build_html_tree(child.id, children_map, level + 2));
+                        
+                        result.push_str(&format!("{}    </li>\n", indent));
                     }
-                    
-                    result.push_str(&format!("{}</ul>\n", indent));
                 }
                 
-                result
+                result.push_str(&format!("{}</ul>\n", indent));
             }
             
-            // Start with root folders (IDs 1-5 are standard Firefox roots)
-            for root_id in 1..=5 {
-                html.push_str(&build_html_tree(root_id, &children_map, 0));
-            }
-            
-            html.push_str("</body>\n</html>");
-            
-            Ok(html)
+            result
         }
+        
+        // Start with root folders (IDs 1-5 are standard Firefox roots)
+        for root_id in 1..=5 {
+            html.push_str(&build_html_tree(root_id, &children_map, 0));
+        }
+        
+        html.push_str("</body>\n</html>");
+        
+        Ok(html)
     }
 
     fn json_to_html(&self, bookmarks: &serde_json::Value) -> String {
@@ -607,7 +612,7 @@ impl BackupManager {
             
             if let Some(name) = folder.get("name").and_then(|v| v.as_str()) {
                 if depth > 0 {
-                    result.push_str(&format!("{}<div class=\"folder\">{}</div>\n", indent, encode_text(name));
+                    result.push_str(&format!("{}<div class=\"folder\">{}</div>\n", indent, encode_text(name)));
                 }
             }
             
